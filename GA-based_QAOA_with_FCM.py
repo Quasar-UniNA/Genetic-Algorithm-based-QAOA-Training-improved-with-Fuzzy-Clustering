@@ -215,8 +215,12 @@ def reusing_params_for_GA_training(X_train, X_test, idx_train_instances_for_test
                 FCM_pop = np.array(arr_angles_FCM)
                 init_pop = np.concatenate((FCM_pop, rand_pop))
             else:
-                arr_angles_FCM = [np.array(ang) for ang in
-                                  train_angles[idx_train_inst[:int(pop_size * perc_pop_size)]]]
+                if similarity_based_selection == 'least-to-most':
+                    arr_angles_FCM = [np.array(ang) for ang in
+                                      train_angles[idx_train_inst[:int(pop_size * perc_pop_size)]]]
+                else:
+                    arr_angles_FCM = [np.array(ang) for ang in
+                                      train_angles[idx_train_inst[-int(pop_size * perc_pop_size):]]]
                 FCM_pop = np.array(arr_angles_FCM)
                 if len(FCM_pop) < pop_size:
                     np.random.seed(n_run)
@@ -255,6 +259,7 @@ def main():
     pop_size = 10
     max_nfev = 510
     perc_pop_size = 1.0
+    similarity_based_selection = 'least-to-most'   # or 'most-to-least'
     backend = FakeMontreal()
     X_train = read_pkl_file(f"datasets/db_train_GA.pkl")
     X_test = read_pkl_file(f"datasets/db_test_GA.pkl")
