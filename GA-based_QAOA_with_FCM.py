@@ -1,22 +1,95 @@
 import skfuzzy as fuzz
 import numpy as np
-from qiskit.providers.aer import AerSimulator
-from qiskit.providers.fake_provider import FakeMontreal
-from evovaq.tools.operators import cx_uniform, sel_tournament, mut_gaussian
-from utils.graphs import graph_symmetry
-from utils.maxcut_problem import create_qaoa_circ, compute_expectation, get_expectation_qiskit
-from evovaq.problem import Problem
-from evovaq.GeneticAlgorithm import GA
-from evovaq.tools.utils import read_pkl_file, write_pkl_file
 import random
 import pandas as pd
 import re
+from qiskit_ibm_runtime.fake_provider import FakeMontrealV2 as FakeMontreal
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from evovaq.tools.operators import cx_uniform, sel_tournament, mut_gaussian
+from evovaq.problem import Problem
+from evovaq.GeneticAlgorithm import GA
+from evovaq.tools.utils import read_pkl_file, write_pkl_file
 
+def graph_symmetry(G):
+    list_degrees = G.degree
+    degrees = []
+    symmetry = True
+    for node, degree in list_degrees:
+        if (degree % 2) == 0:
+            degrees.append('even')
+        else:
+            degrees.append('odd')
+        if 'even' in degrees and 'odd' in degrees:
+            symmetry = False
+            break
+    return symmetry, degrees
 
 def test_ratio(c_max, c_max_qaoa, c_max_cluster):
     return (abs(c_max) - abs(c_max_qaoa)) / (abs(c_max) - abs(c_max_cluster))
 
+def create_qaoa_circ(G, theta):
+    nqubits = len(G.nodes())
+    p = len(theta) // 2
+    qc = QuantumCircuit(nqubits)
 
+    beta = theta[:p]
+    gamma = theta[p:]
+
+    # initial_state
+    for i in range(0, len(G.nodes)):
+        qc.h(i)
+    qc.barrier()
+
+    for irep in range(0, p):
+
+        # problem unitary
+        for pair in list(G.edges()):
+            qc.rzz(2 * gamma[irep], pair[0], pair[1])
+        qc.barrier()
+
+        # mixer unitary
+        for i in range(0, len(G.nodes)):
+            qc.rx(2 * beta[irep], i)
+        if irep != 0:
+            qc.barrier()
+        else:
+            pass
+
+    qc.measure_all()
+
+    return qc
+
+def maxcut_obj(x, G):
+    obj = 0
+    x = x[::-1]
+    for i, j in G.edges():
+        if x[i] != x[j]:
+            obj -= 1
+    return obj
+    
+def compute_expectation(counts, G):
+    avg = 0
+    sum_count = 0
+    for bitstring, count in counts.items():
+        obj = maxcut_obj(bitstring, G)
+        avg += obj * count
+        sum_count += count
+    return avg / sum_count
+
+def get_expectation_qiskit(G, backend, shots):
+    pm = generate_preset_pass_manager(backend=backend, optimization_level=0)
+    sampler = Sampler(backend)
+    def execute_circuit(theta):
+        qc = create_qaoa_circ(G, theta)
+        qaoa_isa = pm.run(qc)
+        pub = (qaoa_isa, theta)
+        job = sampler.run([pub])
+        pub_results = job.result()[0]
+        counts = pub_results.data.meas.get_counts()
+        return compute_expectation(counts, G)
+    return execute_circuit
+    
 def clusteringFCM(features_train, features_test, fuzzifier):
     # Fuzzy C-Means
     best_run_for_n_clusters = {}
@@ -55,8 +128,6 @@ def clusteringFCM(features_train, features_test, fuzzifier):
             pass
 
     print(f"Best number of clusters {best_n_clusters} with fpc value {best_fpc}")
-    # df_C_vs_fpc = pd.DataFrame.from_dict(dict_C_vs_fpc)
-    # df_C_vs_fpc.to_csv(f"Results_QAOA_FUZZ/p={p}/db_C_vs_fpc_p={p}_m={fuzzifier}.csv", index=True)
 
     n_best, cntr_best, u_best, u0_best, d_best, jm_best, p_runs_best, fpc_best = \
         best_run_for_n_clusters[str(best_n_clusters)]
@@ -112,12 +183,12 @@ def reusing_params_for_GA_training(X_train, X_test, idx_train_instances_for_test
                                                                 idx_train_instances_for_test_graph,
                                                                 queries_for_test_graph, c_maxs):
         if tot_train_inst <= int(perc_pop_size * pop_size):
-            ratios = read_pkl_file(f'/home/achiatto/Projects/QAOA/p{p}_ratios_perc1.pkl')
+            ratios = read_pkl_file(f'p{p}_ratios_perc10.pkl')
             r_1.append(ratios['r_1'][i])
             r_3.append(ratios['r_3'][i])
 
         else:
-            df = pd.read_excel( f'/home/achiatto/Projects/QAOA/Results_QAOA/p={p}/n={len(G.nodes)}/{idx}.xlsx',
+            df = pd.read_excel( f'Results_QAOA/p={p}/n={len(G.nodes)}/{idx}.xlsx',
                                 sheet_name='GA_MAX_EVAL=500', usecols=['n_run', 'best_cost'])
             selected_rows = df[df['n_run'] <= 10]
             c_ga = np.mean(selected_rows['best_cost'].to_numpy())
@@ -189,11 +260,10 @@ def reusing_params_for_GA_training(X_train, X_test, idx_train_instances_for_test
 def main():
     pop_size = 10
     max_nfev = 510
-    perc_pop_size = 0.5
-    mock_backend = FakeMontreal()
-    backend = AerSimulator.from_backend(mock_backend)
-    X_train = read_pkl_file(f"/home/achiatto/Projects/QAOA/Graphs/db_train_GA.pkl")
-    X_test = read_pkl_file(f"/home/achiatto/Projects/QAOA/Graphs/db_test_GA.pkl")
+    perc_pop_size = 1.0
+    backend = FakeMontreal()
+    X_train = read_pkl_file(f"db_train_GA.pkl")
+    X_test = read_pkl_file(f"db_test_GA.pkl")
     features_train = X_train[['density', 'log_nodes', 'log_edges', 'log_first_largest_eigen',
                               'log_second_largest_eigen', 'log_ratio']].to_numpy()
 
@@ -216,7 +286,8 @@ def main():
         r_3.extend(r_3_stats)
         r_3.append(impr_r_3)
 
-        write_pkl_file({'r_1': r_1, 'r_3': r_3}, f'p{p}_ratios_perc05.pkl')
+        perc = str(perc_pop_size).replace('.', '')
+        write_pkl_file({'r_1': r_1, 'r_3': r_3}, f'p{p}_ratios_perc{perc}.pkl')
 
 
 if __name__ == '__main__':
