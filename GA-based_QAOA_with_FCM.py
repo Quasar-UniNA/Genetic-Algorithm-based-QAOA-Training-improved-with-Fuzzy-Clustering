@@ -182,79 +182,73 @@ def reusing_params_for_GA_training(X_train, X_test, idx_train_instances_for_test
     for i, idx, G, idx_train_inst, tot_train_inst, c_max in zip(range(len(idx_graph)), idx_graph, test_graphs,
                                                                 idx_train_instances_for_test_graph,
                                                                 queries_for_test_graph, c_maxs):
-        if tot_train_inst <= int(perc_pop_size * pop_size):
-            ratios = read_pkl_file(f'p{p}_ratios_perc10.pkl')
-            r_1.append(ratios['r_1'][i])
-            r_3.append(ratios['r_3'][i])
+        df = pd.read_excel( f'Results_QAOA/p={p}/n={len(G.nodes)}/{idx}.xlsx',
+                            sheet_name='GA_MAX_EVAL=500', usecols=['n_run', 'best_cost'])
+        selected_rows = df[df['n_run'] <= 10]
+        c_ga = np.mean(selected_rows['best_cost'].to_numpy())
 
+        symmetry, degrees = graph_symmetry(G)
+        if symmetry:
+            bounds_1 = [(-np.pi / 4, 0)]
+            bounds_2 = [(-np.pi / 4, np.pi / 4) for _ in range(1, p)]
+            bounds_3 = [(-np.pi / 2, np.pi / 2) for _ in range(p)]
         else:
-            df = pd.read_excel( f'Results_QAOA/p={p}/n={len(G.nodes)}/{idx}.xlsx',
-                                sheet_name='GA_MAX_EVAL=500', usecols=['n_run', 'best_cost'])
-            selected_rows = df[df['n_run'] <= 10]
-            c_ga = np.mean(selected_rows['best_cost'].to_numpy())
+            bounds_1 = [(-np.pi / 4, 0)]
+            bounds_2 = [(-np.pi / 4, np.pi / 4) for _ in range(1, p)]
+            bounds_3 = [(-np.pi, np.pi) for _ in range(p)]
 
-            symmetry, degrees = graph_symmetry(G)
-            if symmetry:
-                bounds_1 = [(-np.pi / 4, 0)]
-                bounds_2 = [(-np.pi / 4, np.pi / 4) for _ in range(1, p)]
-                bounds_3 = [(-np.pi / 2, np.pi / 2) for _ in range(p)]
+        bounds = bounds_1 + bounds_2 + bounds_3
+        cost_function = get_expectation_qiskit(G=G, backend=backend, shots=512)
+        problem = Problem(2 * p, bounds, cost_function)
+
+        optimizer = GA(selection=sel_tournament, crossover=cx_uniform, mutation=mut_gaussian, cxpb=0.7,
+                       tournsize=3, cx_indpb=0.5, mut_indpb=0.25, mu=0, sigma=0.1)
+
+        final_fcm_ga_costs = []
+        best_fcm_ga = 100.0
+        for n_run in range(10):
+            if tot_train_inst < int(pop_size * perc_pop_size):
+                np.random.seed(n_run)
+                random.seed(n_run)
+                rand_pop = problem.generate_random_pop(int(pop_size - tot_train_inst))
+                arr_angles_FCM = [np.array(ang) for ang in train_angles[idx_train_inst]]
+                FCM_pop = np.array(arr_angles_FCM)
+                init_pop = np.concatenate((FCM_pop, rand_pop))
             else:
-                bounds_1 = [(-np.pi / 4, 0)]
-                bounds_2 = [(-np.pi / 4, np.pi / 4) for _ in range(1, p)]
-                bounds_3 = [(-np.pi, np.pi) for _ in range(p)]
-
-            bounds = bounds_1 + bounds_2 + bounds_3
-            cost_function = get_expectation_qiskit(G=G, backend=backend, shots=512)
-            problem = Problem(2 * p, bounds, cost_function)
-
-            optimizer = GA(selection=sel_tournament, crossover=cx_uniform, mutation=mut_gaussian, cxpb=0.7,
-                           tournsize=3, cx_indpb=0.5, mut_indpb=0.25, mu=0, sigma=0.1)
-
-            final_fcm_ga_costs = []
-            best_fcm_ga = 100.0
-            for n_run in range(10):
-                if tot_train_inst < int(pop_size * perc_pop_size):
+                arr_angles_FCM = [np.array(ang) for ang in
+                                  train_angles[idx_train_inst[:int(pop_size * perc_pop_size)]]]
+                FCM_pop = np.array(arr_angles_FCM)
+                if len(FCM_pop) < pop_size:
                     np.random.seed(n_run)
                     random.seed(n_run)
-                    rand_pop = problem.generate_random_pop(int(pop_size - tot_train_inst))
-                    arr_angles_FCM = [np.array(ang) for ang in train_angles[idx_train_inst]]
-                    FCM_pop = np.array(arr_angles_FCM)
+                    rand_pop = problem.generate_random_pop(int(pop_size - pop_size * perc_pop_size))
                     init_pop = np.concatenate((FCM_pop, rand_pop))
                 else:
-                    arr_angles_FCM = [np.array(ang) for ang in
-                                      train_angles[idx_train_inst[:int(pop_size * perc_pop_size)]]]
-                    FCM_pop = np.array(arr_angles_FCM)
-                    if len(FCM_pop) < pop_size:
-                        np.random.seed(n_run)
-                        random.seed(n_run)
-                        rand_pop = problem.generate_random_pop(int(pop_size - pop_size * perc_pop_size))
-                        init_pop = np.concatenate((FCM_pop, rand_pop))
-                    else:
-                        init_pop = FCM_pop
+                    init_pop = FCM_pop
 
-                res = optimizer.optimize(problem, pop_size, initial_pop=init_pop, max_nfev=max_nfev, seed=n_run, n_run=n_run)
-                final_fcm_ga_costs.append(res.fun)
-                if res.fun < best_fcm_ga:
-                    best_fcm_ga = res.fun
+            res = optimizer.optimize(problem, pop_size, initial_pop=init_pop, max_nfev=max_nfev, seed=n_run, n_run=n_run)
+            final_fcm_ga_costs.append(res.fun)
+            if res.fun < best_fcm_ga:
+                best_fcm_ga = res.fun
 
-            c_fcm_ga = np.mean(final_fcm_ga_costs)
-            r_1.append(test_ratio(c_max, c_ga, c_fcm_ga))
+        c_fcm_ga = np.mean(final_fcm_ga_costs)
+        r_1.append(test_ratio(c_max, c_ga, c_fcm_ga))
 
-            c_fcm = 100.0
-            for angles in train_angles[idx_train_inst]:
-                qc_res = create_qaoa_circ(G, angles)
-                counts = backend.run(qc_res, seed_simulator=10, shots=512).result().get_counts()
-                c_max_cluster = compute_expectation(counts, G)
-                if c_max_cluster < c_fcm:
-                    c_fcm = c_max_cluster
+        c_fcm = 100.0
+        for angles in train_angles[idx_train_inst]:
+            qc_res = create_qaoa_circ(G, angles)
+            counts = backend.run(qc_res, seed_simulator=10, shots=512).result().get_counts()
+            c_max_cluster = compute_expectation(counts, G)
+            if c_max_cluster < c_fcm:
+                c_fcm = c_max_cluster
 
-            r_3.append(test_ratio(c_max, c_fcm, c_fcm_ga))
+        r_3.append(test_ratio(c_max, c_fcm, c_fcm_ga))
 
-    print(f"Test ratios for p={p}:\n r_1: {r_1} \n r_3: {r_3}")
-    print('Statistics r_1: ', np.mean(r_1), np.median(r_1), np.max(r_1), np.min(r_1))
-    print('Statistics r_3: ', np.mean(r_3), np.median(r_3), np.max(r_3), np.min(r_3))
+print(f"Test ratios for p={p}:\n r_1: {r_1} \n r_3: {r_3}")
+print('Statistics r_1: ', np.mean(r_1), np.median(r_1), np.max(r_1), np.min(r_1))
+print('Statistics r_3: ', np.mean(r_3), np.median(r_3), np.max(r_3), np.min(r_3))
 
-    return r_1, r_3
+return r_1, r_3
 
 
 def main():
@@ -262,8 +256,8 @@ def main():
     max_nfev = 510
     perc_pop_size = 1.0
     backend = FakeMontreal()
-    X_train = read_pkl_file(f"db_train_GA.pkl")
-    X_test = read_pkl_file(f"db_test_GA.pkl")
+    X_train = read_pkl_file(f"datasets/db_train_GA.pkl")
+    X_test = read_pkl_file(f"datasets/db_test_GA.pkl")
     features_train = X_train[['density', 'log_nodes', 'log_edges', 'log_first_largest_eigen',
                               'log_second_largest_eigen', 'log_ratio']].to_numpy()
 
