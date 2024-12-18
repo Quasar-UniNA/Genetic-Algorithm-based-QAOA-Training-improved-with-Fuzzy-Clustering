@@ -182,7 +182,7 @@ def reusing_params_for_GA_training(X_train, X_test, idx_train_instances_for_test
     for i, idx, G, idx_train_inst, tot_train_inst, c_max in zip(range(len(idx_graph)), idx_graph, test_graphs,
                                                                 idx_train_instances_for_test_graph,
                                                                 queries_for_test_graph, c_maxs):
-        df = pd.read_excel( f'Results_QAOA/p={p}/n={len(G.nodes)}/{idx}.xlsx',
+        df = pd.read_excel( f'results_from_standard_training_QAOA/p={p}/n={len(G.nodes)}/{idx}.xlsx',
                             sheet_name='GA_MAX_EVAL=500', usecols=['n_run', 'best_cost'])
         selected_rows = df[df['n_run'] <= 10]
         c_ga = np.mean(selected_rows['best_cost'].to_numpy())
